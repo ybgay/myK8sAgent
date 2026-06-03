@@ -1,0 +1,994 @@
+Metadata-Version: 2.4
+Name: k8s-agent
+Version: 0.1.0
+Summary: LLM-powered Kubernetes Agent with multi-agent collaboration, MCP server, and pluggable skills
+Author: k8s-agent
+License: MIT
+Keywords: kubernetes,llm,agent,mcp,claude
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: anthropic>=0.40.0
+Requires-Dist: openai>=1.0.0
+Requires-Dist: mcp>=1.0.0
+Requires-Dist: kubernetes>=30.0.0
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: pydantic-settings>=2.0.0
+Requires-Dist: typer>=0.12.0
+Requires-Dist: rich>=13.0.0
+Requires-Dist: structlog>=24.0.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: tenacity>=8.0.0
+Requires-Dist: fastapi>=0.110.0
+Requires-Dist: uvicorn[standard]>=0.29.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
+Requires-Dist: pytest-cov>=5.0.0; extra == "dev"
+Requires-Dist: ruff>=0.5.0; extra == "dev"
+Requires-Dist: mypy>=1.0.0; extra == "dev"
+
+# ☸️ K8s Agent
+
+**LLM-powered Kubernetes Agent** with multi-agent collaboration, MCP protocol, and pluggable skills.
+
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+---
+
+## 🎯 Features
+
+- **🤖 Multi-Agent Collaboration** — Master Agent orchestrates specialized sub-agents (K8s Agent, Skill Agents) via MessageBus
+- **🔌 MCP Protocol** — Built-in K8s MCP Server (30+ tools), can connect to ANY third-party MCP server (GitHub, Postgres, Slack, etc.)
+- **🧩 Pluggable Skills** — Hot-loadable skill plugins: 3 built-in + custom skill API
+- **💬 Web UI** — Real-time chat interface with streaming responses and tool call visualization
+- **🖥️ CLI** — Full-featured command-line interface (serve, run, web, skill, config)
+- **🔒 Safe by Default** — Destructive operations require confirmation, secrets are redacted
+- **📦 Standalone MCP Server** — The K8s MCP server can be used by ANY MCP client (Claude Desktop, Claude Code, etc.)
+
+---
+
+## 📋 Architecture
+
+```
+User (CLI / Web UI / API)
+  ↓
+┌──────────────────────────────────────────┐
+│  编排层 (packages/core)                   │
+│  MasterAgent → TaskDecomposer → Executor │
+│  子Agent: K8sAgent, SkillAgent           │
+│  通信: MessageBus + SharedContext         │
+└──────────────────────────────────────────┘
+   ↓              ↓              ↓
+┌──────┐  ┌──────────┐  ┌──────────────┐
+│ LLM  │  │ Skills   │  │ MCP Client   │
+│ 层   │  │ 层       │  │ Manager      │
+└──────┘  └──────────┘  └──────────────┘
+                              ↓ (MCP协议)
+                  ┌───────────────────────┐
+                  │ K8s MCP Server        │
+                  │ 30+ Tools             │
+                  └───────────────────────┘
+                              ↓
+                  ┌───────────────────────┐
+                  │ @kubernetes/client    │
+                  │ (真实 K8s API)         │
+                  └───────────────────────┘
+```
+
+---
+
+## 📁 Code Structure
+
+```
+k8sAgent/
+├── pyproject.toml                # 项目配置 + 依赖
+├── .env.example                  # 环境变量模板
+├── README.md                     # 本文档
+│
+├── src/k8s_agent/
+│   ├── __init__.py
+│   │
+│   ├── shared/                   # 🔧 公共模块（所有模块依赖的基础层）
+│   │   ├── types.py              #   Pydantic模型：Agent, Skill, Tool, Message, Task等核心类型
+│   │   ├── errors.py             #   错误体系：AppError基类 + 30+子类（Config/K8s/Agent/Skill/LLM/MCP）
+│   │   ├── config.py             #   配置管理：pydantic-settings，支持YAML文件+环境变量
+│   │   └── logging.py            #   结构化日志：structlog，支持pretty/json两种格式
+│   │
+│   ├── llm/                      # 🧠 LLM抽象层
+│   │   ├── provider.py           #   LLMProvider抽象接口：complete() + complete_stream() + health_check()
+│   │   ├── anthropic_client.py   #   Anthropic适配器：retry、circuit breaker、prompt caching、streaming
+│   │   ├── conversation.py       #   对话管理器：消息历史、token估算、自动压缩
+│   │   └── prompts.py            #   System Prompts：Master/K8s/Skill/DeploymentAnalyzer/Troubleshooting/CostOptimizer
+│   │
+│   ├── mcp_server/               # 🔌 K8s MCP Server（独立可用，任何MCP客户端都能连接）
+│   │   ├── server.py             #   MCP Server创建 + stdio/HTTP两种传输方式
+│   │   ├── k8s_client.py         #   K8s客户端工厂：kubeconfig/in-cluster/token三种认证策略
+│   │   ├── middleware.py          #   中间件：错误处理、访问控制（黑白名单）、审计日志
+│   │   └── tools/                #   30+ MCP工具实现
+│   │       ├── namespaces.py     #     list/get/create/delete 命名空间
+│   │       ├── pods.py           #     list/get/describe/create/delete/logs/exec Pod操作
+│   │       ├── deployments.py    #     list/get/create/update/delete/rollout/restart/undo 部署管理
+│   │       ├── services.py       #     list/get/create/delete/expose 服务操作
+│   │       ├── configmaps.py     #     list/get/create/update/delete ConfigMap操作
+│   │       ├── secrets.py        #     list/get/create/delete Secret（值默认脱敏）
+│   │       ├── nodes.py          #     list/get/cordon/uncordon/drain Node管理
+│   │       ├── events.py         #     list/get_resource_events 事件查询
+│   │       ├── logs.py           #     get/extended/stream 日志获取
+│   │       ├── scale.py          #     scale_deployment/statefulset, get_hpa 弹性伸缩
+│   │       ├── helm.py           #     list/install/uninstall/repo_add/list Helm管理
+│   │       └── metrics.py        #     get_cluster_info/node_metrics/pod_metrics/api_resources/apply_manifest
+│   │
+│   ├── core/                     # 🧬 Agent编排核心
+│   │   ├── orchestrator.py       #   MasterAgent：agentic loop(think→act→observe) + TaskDecomposer(DAG拆分) + PlanExecutor(拓扑执行)
+│   │   ├── agents/
+│   │   │   ├── base.py           #     BaseAgent：生命周期(init→run→shutdown) + 消息驱动任务执行
+│   │   │   ├── k8s_agent.py      #     K8sAgent：连接K8s MCP Server，暴露30+ K8s工具给编排器
+│   │   │   ├── skill_agent.py    #     SkillAgent：包装技能插件，支持tool-only和sub-agent两种模式
+│   │   │   └── factory.py        #     AgentFactory：创建/管理所有Agent实例
+│   │   ├── communication/
+│   │   │   ├── message_bus.py    #     MessageBus：typed pub/sub，支持通配符匹配和request-response模式
+│   │   │   └── context.py        #     SharedContext：全局/会话/任务三级作用域的KV存储，支持TTL
+│   │   ├── mcp/
+│   │   │   └── client_manager.py #     MCPClientManager：连接任何MCP Server(stdio/HTTP)，聚合所有工具
+│   │   │                         #     内置GitHub/Postgres/Slack/Filesystem MCP的便捷配置方法
+│   │   └── session.py            #   SessionManager：会话持久化（JSON文件），支持保存/恢复/列表
+│   │
+│   ├── skills/                   # 🧩 可插拔技能系统
+│   │   ├── interface.py          #   ISkill抽象接口：get_manifest/get_tools/initialize/activate/health_check
+│   │   ├── manifest.py           #   SkillManifest：技能元数据（name/version/capabilities/agent_type）
+│   │   ├── loader.py             #   SkillLoader：4级发现路径（builtin→user→project→npm）+ 动态加载
+│   │   ├── registry.py           #   SkillRegistry：注册/查找/工具聚合/健康检查
+│   │   └── builtin/              #   3个内置技能
+│   │       ├── troubleshooting.py   # 故障诊断：crash_loop分析、连通性检测、资源压力检查、健康扫描
+│   │       ├── deployment_analyzer.py # 部署分析：manifest验证、资源审计、rollout风险评估
+│   │       └── cost_optimizer.py   # 成本优化：闲置资源检测、right-size建议、未使用资源发现
+│   │
+│   ├── api/                      # 🌐 Web UI + API
+│   │   ├── app.py                #   FastAPI应用：REST端点 + WebSocket流式聊天 + 技能/配置/会话API
+│   │   └── static/
+│   │       └── index.html        #   前端聊天界面：暗色主题、流式响应、工具调用可视化、会话管理
+│   │
+│   └── cli/                      # 🖥️ 命令行界面
+│       └── main.py               #   Typer CLI：serve/run/web/skill/config 五个子命令
+│
+└── tests/                        # 🧪 测试
+    ├── unit/
+    ├── integration/
+    └── e2e/
+```
+
+---
+
+## 🚀 Quick Start
+
+### 1. Install
+
+```bash
+# Clone and install
+cd k8sAgent
+pip install -e .
+
+# Or for development
+pip install -e ".[dev]"
+```
+
+### 2. Configure
+
+Set your Anthropic API key：
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Or create a config file：
+
+```bash
+k8s-agent config init   # Creates k8s-agent.config.yaml
+# Edit the file and set llm.api_key
+```
+
+### 3. Choose your mode
+
+**Web UI (recommended)：**
+
+```bash
+k8s-agent web --port 8080
+# Open http://localhost:8080
+```
+
+![Web UI has chat interface with streaming responses and tool call visualization]
+
+**CLI Interactive：**
+
+```bash
+k8s-agent run
+# Interactive REPL, type your K8s questions
+```
+
+**One-shot：**
+
+```bash
+k8s-agent run "List all failing pods in production namespace"
+```
+
+**Standalone MCP Server：**
+
+```bash
+k8s-agent serve
+# Use with Claude Desktop or any MCP client
+```
+
+---
+
+## 🔌 How to Connect LLM (替换大模型)
+
+本系统通过 `LLMProvider` 抽象接口支持任意大模型。默认使用 Anthropic Claude。
+
+### 使用 Anthropic Claude（默认）
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export LLM_MODEL=claude-sonnet-4-5-20250929
+```
+
+### 使用自定义 OpenAI 兼容 API
+
+创建自定义 Provider（示例：使用 OpenAI API）：
+
+```python
+# my_openai_provider.py
+from openai import AsyncOpenAI
+from k8s_agent.llm.provider import LLMProvider, CompletionRequest, CompletionResponse, CompletionEvent
+
+class OpenAIProvider(LLMProvider):
+    def __init__(self, api_key: str, base_url: str | None = None, model: str = "gpt-4o"):
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._model = model
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        response = await self.client.chat.completions.create(
+            model=self._model,
+            messages=[{"role": "system", "content": request.system_prompt}]
+                     + self._convert_messages(request.messages),
+            tools=self._convert_tools(request.tools),
+            max_tokens=request.max_tokens,
+        )
+        # ... parse response ...
+
+    async def complete_stream(self, request: CompletionRequest):
+        # ... streaming implementation ...
+
+    async def health_check(self) -> bool:
+        try:
+            await self.client.models.list()
+            return True
+        except Exception:
+            return False
+
+    @property
+    def model_info(self):
+        return {"provider": "openai", "model": self._model}
+```
+
+然后在你的代码中使用：
+
+```python
+provider = OpenAIProvider(
+    api_key="your-api-key",
+    base_url="https://your-api-endpoint.com/v1",  # 自定义 API 地址
+    model="gpt-4o",                                # 模型类型
+)
+```
+
+### 替换自己的 API URL、Key、Model
+
+**方式 1：环境变量**
+
+```bash
+export ANTHROPIC_API_KEY=sk-your-key-here
+export LLM_MODEL=claude-opus-4-8
+export LLM_MAX_TOKENS=8192
+export LLM_TEMPERATURE=0.1
+```
+
+**方式 2：YAML 配置文件**
+
+```yaml
+# k8s-agent.config.yaml
+llm:
+  provider: anthropic
+  api_key: ${ANTHROPIC_API_KEY}   # 引用环境变量
+  model: claude-opus-4-8           # Claude模型名
+  max_tokens: 8192
+  temperature: 0.1
+  # 子Agent可使用更便宜的模型
+  sub_agent_model:
+    k8s_agent: claude-haiku-4-5-20250929
+    skill_agent: claude-sonnet-4-5-20250929
+```
+
+然后：
+
+```bash
+export K8S_AGENT_CONFIG=./k8s-agent.config.yaml
+k8s-agent web
+```
+
+**方式 3：代码中直接设置**
+
+```python
+from k8s_agent.llm.anthropic_client import AnthropicProvider
+from k8s_agent.shared.config import LLMConfig
+
+config = LLMConfig(
+    api_key="sk-your-key",
+    model="claude-opus-4-8",
+    max_tokens=8192,
+    temperature=0.1,
+)
+provider = AnthropicProvider(config=config)
+```
+
+---
+
+## 🔌 How to Extend MCP (扩展 MCP)
+
+### 接入第三方开源 MCP Server
+
+`MCPClientManager` 可以连接任何兼容 MCP 协议的服务器。
+
+**示例 1：接入 GitHub MCP Server**
+
+```python
+from k8s_agent.core.mcp.client_manager import MCPClientManager, MCPServerConfig
+
+manager = MCPClientManager()
+
+# GitHub MCP (开源): 提供 search_repos, create_issue, create_pr 等工具
+await manager.connect(MCPServerConfig(
+    name="github",
+    transport="stdio",
+    command="npx",
+    args=["-y", "@anthropic/mcp-server-github"],
+    env={"GITHUB_TOKEN": "ghp_xxx"},
+))
+
+# 调用 GitHub 工具
+repos = await manager.call_tool("github", "search_repos", {"query": "kubernetes"})
+```
+
+**示例 2：接入 Postgres MCP Server**
+
+```python
+await manager.connect(MCPServerConfig(
+    name="postgres",
+    transport="stdio",
+    command="npx",
+    args=["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/mydb"],
+))
+
+# 查询数据库
+result = await manager.call_tool("postgres", "query", {"sql": "SELECT * FROM users LIMIT 10"})
+```
+
+**示例 3：接入远程 HTTP MCP Server**
+
+```python
+await manager.connect(MCPServerConfig(
+    name="remote-k8s",
+    transport="http",
+    url="http://k8s-mcp.internal:3100/mcp",
+    headers={"Authorization": "Bearer xxx"},
+))
+```
+
+**示例 4：接入 Slack MCP Server**
+
+```python
+await manager.connect(MCPServerConfig(
+    name="slack",
+    transport="stdio",
+    command="npx",
+    args=["-y", "@modelcontextprotocol/server-slack"],
+    env={"SLACK_BOT_TOKEN": "xoxb-xxx"},
+))
+```
+
+**便捷方法：**
+
+```python
+# 内置了常用开源MCP Server的配置模板
+manager.connect(manager.github_server_config("ghp_xxx"))
+manager.connect(manager.postgres_server_config("postgresql://..."))
+manager.connect(manager.slack_server_config("xoxb-xxx"))
+manager.connect(manager.filesystem_server_config("/allowed/path"))
+```
+
+所有接入的 MCP Server 的工具会自动聚合并暴露给 Agent，Claude 可以自动决定使用哪个工具。
+
+### 编写自定义 MCP Server
+
+```python
+# my_custom_mcp.py
+from mcp.server import Server
+
+server = Server(name="my-custom-server", version="1.0.0")
+
+@server.tool()
+async def my_tool(param: str) -> str:
+    """My custom tool description."""
+    return f"Processed: {param}"
+
+if __name__ == "__main__":
+    import asyncio
+    from mcp.server.stdio import stdio_server
+    async def main():
+        async with stdio_server() as (read, write):
+            await server.run(read, write, server.create_initialization_options())
+    asyncio.run(main())
+```
+
+然后连接它：
+
+```python
+await manager.connect(MCPServerConfig(
+    name="my-custom",
+    transport="stdio",
+    command="python",
+    args=["my_custom_mcp.py"],
+))
+```
+
+---
+
+## 🧩 How to Extend Skill (扩展技能)
+
+### 快速创建新技能
+
+```bash
+# 生成技能模板
+k8s-agent skill init --path ./my-skill
+
+# 验证技能配置
+k8s-agent skill validate --path ./my-skill
+
+# 列出所有可用技能
+k8s-agent skill list
+```
+
+### 手写一个自定义技能
+
+```python
+# my_custom_skill.py
+import json
+from typing import Any
+from k8s_agent.skills.interface import ISkill, SkillContext, SkillTool
+from k8s_agent.skills.manifest import SkillManifest
+
+
+class MyScaleAlertSkill(ISkill):
+    """Custom skill: Send alert when deployment scales."""
+
+    def get_manifest(self) -> SkillManifest:
+        return SkillManifest(
+            name="scale-alert",               # 唯一标识符
+            version="1.0.0",
+            description="Send alerts when deployments scale",
+            author="your-name",
+            keywords=["kubernetes", "scaling", "alert"],
+            agent_type="tool-only",            # "tool-only" 或 "sub-agent"
+            capabilities=["send_scale_alert"],
+        )
+
+    def get_tools(self) -> list[SkillTool]:
+        return [
+            SkillTool(
+                name="send_scale_alert",
+                description="Send a notification when a deployment scales",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "deployment_name": {"type": "string"},
+                        "namespace": {"type": "string", "default": "default"},
+                        "old_replicas": {"type": "integer"},
+                        "new_replicas": {"type": "integer"},
+                        "webhook_url": {"type": "string"},
+                    },
+                    "required": ["deployment_name", "old_replicas", "new_replicas", "webhook_url"],
+                },
+                handler=self._send_alert,
+            ),
+        ]
+
+    async def initialize(self, context: SkillContext) -> None:
+        self.logger = context.logger
+        self.logger.info("scale_alert_skill_ready")
+
+    async def _send_alert(
+        self,
+        deployment_name: str,
+        namespace: str,
+        old_replicas: int,
+        new_replicas: int,
+        webhook_url: str,
+    ) -> str:
+        """Send the alert via HTTP webhook."""
+        import httpx
+        async with httpx.AsyncClient() as client:
+            await client.post(webhook_url, json={
+                "text": f"⚡ Scaling: {namespace}/{deployment_name} "
+                        f"{old_replicas} → {new_replicas} replicas"
+            })
+        return json.dumps({"status": "sent"})
+
+
+# Required: export factory function
+def create_skill():
+    return MyScaleAlertSkill()
+```
+
+### 注册并使用技能
+
+```python
+from k8s_agent.skills.loader import SkillLoader
+from k8s_agent.skills.interface import SkillContext
+from k8s_agent.skills.registry import SkillRegistry
+from k8s_agent.shared.logging import get_logger
+
+# 创建上下文
+ctx = SkillContext(
+    logger=get_logger("skills"),
+    k8s_client=None,  # 可选
+    mcp_client_manager=mcp_manager,  # 可选：让技能使用MCP工具
+)
+
+# 加载技能
+loader = SkillLoader(ctx)
+discovered = loader.discover(extra_paths=["./my-skills"])
+for path, manifest in discovered:
+    skill = await loader.load(path, manifest)
+    registry.register(skill)
+
+# 获取技能工具
+tools = registry.get_all_tools()
+
+# 执行技能工具
+result = await registry.execute_tool("scale-alert", "send_scale_alert", {
+    "deployment_name": "my-app",
+    "namespace": "production",
+    "old_replicas": 1,
+    "new_replicas": 3,
+    "webhook_url": "https://hooks.slack.com/...",
+})
+```
+
+### 创建 Sub-Agent 技能
+
+Sub-Agent 技能拥有自己的 system prompt，可以作为独立 Agent 运行：
+
+```python
+class MyExpertSkill(ISkill):
+    def get_manifest(self):
+        return SkillManifest(
+            name="my-expert",
+            agent_type="sub-agent",      # 关键：设置为 sub-agent
+            capabilities=["expert_analysis"],
+            agent_config={
+                "system_prompt": "You are an expert analyst. Use your tools to analyze data and provide insights.",
+                "max_iterations": 5,
+            },
+        )
+    # ... 其余实现相同
+```
+
+Sub-Agent 技能会由 `SkillAgent` 包装，拥有独立的 agentic loop。
+
+### 技能发现路径
+
+系统按以下优先级搜索技能：
+
+1. **Built-in**: `k8s_agent/skills/builtin/*` — 内置技能
+2. **User**: `~/.k8s-agent/skills/*` — 用户级全局技能
+3. **Project**: `./.k8s-agent/skills/*` — 项目级技能
+4. **npm/PyPI**: `k8s-agent-skill-*` 包 — 发布的技能包
+
+---
+
+## 🤖 How to Extend Agent (扩展 Agent)
+
+### 创建自定义 Agent 类型
+
+```python
+from k8s_agent.core.agents.base import BaseAgent
+from k8s_agent.core.communication.message_bus import MessageBus
+from k8s_agent.core.communication.context import SharedContext
+from k8s_agent.shared.types import AgentCapability, TaskRequest, TaskResult, TaskStatus
+
+
+class MyCustomAgent(BaseAgent):
+    """A custom agent with specialized behavior."""
+
+    def __init__(self, message_bus: MessageBus, context: SharedContext, **kwargs):
+        super().__init__(
+            agent_type="my-custom",       # 自定义类型名
+            name="my-custom-agent",
+            message_bus=message_bus,
+            context=context,
+            capabilities=[
+                AgentCapability(
+                    name="custom_operation",
+                    description="My custom K8s operation",
+                    tags=["custom", "kubernetes"],
+                ),
+            ],
+        )
+        self.custom_config = kwargs
+
+    async def execute_task(self, task: TaskRequest) -> TaskResult:
+        """Implement your task logic here."""
+        action = task.params.get("action", task.action)
+        params = task.params.get("params", {})
+
+        # Your custom logic
+        result = await self._do_custom_work(action, params)
+
+        return TaskResult(
+            task_id=task.task_id,
+            status=TaskStatus.SUCCESS,
+            output=result,
+        )
+
+    async def get_available_tools(self) -> list[dict]:
+        """Return tools this agent provides."""
+        return [
+            {
+                "name": "my_custom_tool",
+                "description": "Does something custom",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "param": {"type": "string"},
+                    },
+                    "required": ["param"],
+                },
+            },
+        ]
+
+    async def _do_custom_work(self, action: str, params: dict) -> str:
+        # Implement here
+        return f"Custom work: {action} completed"
+```
+
+### 注册自定义 Agent
+
+```python
+from k8s_agent.core.agents.factory import AgentFactory
+
+factory = AgentFactory(message_bus, context, mcp_client_manager, llm_provider)
+
+# 方式 1: 注册 builder
+factory.register_builder("my-custom", MyCustomAgent)
+
+# 方式 2: 直接创建
+agent = MyCustomAgent(message_bus, context)
+await agent.initialize()
+
+# Agent 自动通过 MessageBus 接收任务
+# Topic: agent.my-custom.*
+```
+
+### Agent 通信
+
+Agent 之间通过 `MessageBus` 通信：
+
+```python
+# 发布任务
+await message_bus.publish("agent.k8s.list_pods", TaskRequest(
+    task_type="k8s",
+    action="list_pods",
+    params={"namespace": "default"},
+))
+
+# 订阅任务
+@message_bus.on("agent.k8s.*")
+async def handle_k8s_task(topic, message):
+    # Process the task
+    pass
+
+# 请求-响应模式（等待结果）
+result = await message_bus.request(
+    "agent.k8s.describe_pod",
+    TaskRequest(task_type="k8s", action="describe_pod", params={"name": "my-pod"}),
+    timeout=30.0,
+)
+```
+
+---
+
+## ⚙️ Configuration Reference
+
+### 完整配置项
+
+```yaml
+# k8s-agent.config.yaml
+kubernetes:
+  auth_mode: kubeconfig      # kubeconfig | in-cluster | token
+  kubeconfig_path: ~/.kube/config
+  context: null              # 指定kubeconfig context
+
+llm:
+  provider: anthropic
+  api_key: ${ANTHROPIC_API_KEY}
+  model: claude-sonnet-4-5-20250929
+  max_tokens: 4096
+  temperature: 0.2
+  retry_max_retries: 3
+  circuit_failure_threshold: 5
+
+mcp_server:
+  transport: stdio           # stdio | http
+  http_host: 0.0.0.0
+  http_port: 3100
+  access_control_enabled: true
+  allowed_tools: ["*"]
+  denied_tools: ["delete_namespace", "drain_node"]
+
+agent:
+  max_iterations: 15
+  task_timeout_ms: 300000
+  parallel_task_limit: 3
+  confirmation_required:
+    - delete_namespace
+    - delete_deployment
+    - drain_node
+
+skills:
+  paths:
+    - ~/.k8s-agent/skills
+    - ./.k8s-agent/skills
+
+logging:
+  level: info                # trace | debug | info | warn | error
+  format: pretty             # pretty | json
+```
+
+### 环境变量
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `ANTHROPIC_API_KEY` | Anthropic API 密钥 | - |
+| `LLM_MODEL` | Claude 模型名 | `claude-sonnet-4-5-20250929` |
+| `LLM_MAX_TOKENS` | 最大输出 token | `4096` |
+| `K8S_AUTH_MODE` | K8s 认证方式 | `kubeconfig` |
+| `K8S_KUBECONFIG_PATH` | Kubeconfig 路径 | `~/.kube/config` |
+| `K8S_AGENT_CONFIG` | YAML 配置文件路径 | - |
+| `LOG_LEVEL` | 日志级别 | `info` |
+
+---
+
+## 🔧 How to Run This Project
+
+### 安装
+
+```bash
+# 创建虚拟环境
+python -m venv .venv
+source .venv/bin/activate   # Linux/Mac
+# .venv\Scripts\activate    # Windows
+
+# 安装项目
+cd k8sAgent
+pip install -e .
+
+# 开发模式（含测试工具）
+pip install -e ".[dev]"
+```
+
+### 运行方式
+
+**1. Web UI（推荐开发调试）**
+
+```bash
+k8s-agent web --port 8080 --reload
+# 打开浏览器 http://localhost:8080
+# --reload 开启热重载（修改代码自动重启）
+```
+
+**2. CLI 交互模式**
+
+```bash
+k8s-agent run
+# 进入 REPL，直接输入问题
+```
+
+**3. CLI 单次运行**
+
+```bash
+k8s-agent run "List all pods in kube-system namespace"
+k8s-agent run "Check the health of my production namespace"
+```
+
+**4. 启动独立 MCP Server（给其他客户端用）**
+
+```bash
+# Stdio 模式（Claude Desktop 等）
+k8s-agent serve
+
+# HTTP 模式（远程访问）
+k8s-agent serve --transport http --port 3100
+```
+
+在 Claude Desktop 配置中引用：
+
+```json
+{
+  "mcpServers": {
+    "k8s-agent": {
+      "command": "python",
+      "args": ["-m", "k8s_agent.mcp_server.server"]
+    }
+  }
+}
+```
+
+**5. 用代码调用**
+
+```python
+import asyncio
+from k8s_agent.core.orchestrator import MasterAgent
+from k8s_agent.core.communication.message_bus import MessageBus
+from k8s_agent.core.communication.context import SharedContext
+from k8s_agent.core.mcp.client_manager import MCPClientManager
+from k8s_agent.llm.anthropic_client import AnthropicProvider
+
+async def main():
+    llm = AnthropicProvider()
+    message_bus = MessageBus()
+    context = SharedContext()
+    mcp = MCPClientManager()
+
+    # 连接 K8s MCP Server
+    from k8s_agent.core.mcp.client_manager import MCPServerConfig
+    await mcp.connect(MCPServerConfig(
+        name="k8s", transport="stdio",
+        command="python", args=["-m", "k8s_agent.mcp_server.server"],
+    ))
+
+    master = MasterAgent(llm, message_bus, context, mcp)
+    await master.initialize()
+
+    response = await master.run("Deploy nginx with 3 replicas")
+    print(response)
+
+    await mcp.disconnect_all()
+
+asyncio.run(main())
+```
+
+---
+
+## 📊 MCP Tools Reference
+
+### Namespace Tools
+| Tool | Description | Required Params |
+|------|-------------|-----------------|
+| `list_namespaces` | List all namespaces | - |
+| `get_namespace` | Get namespace details | `name` |
+| `create_namespace` | Create a namespace | `name` |
+| `delete_namespace` | Delete a namespace | `name` |
+
+### Pod Tools
+| Tool | Description | Required Params |
+|------|-------------|-----------------|
+| `list_pods` | List pods in namespace | `namespace` |
+| `get_pod` | Get pod details | `name`, `namespace` |
+| `describe_pod` | Full pod description + events | `name`, `namespace` |
+| `create_pod` | Create a pod | `name`, `namespace`, `image` |
+| `delete_pod` | Delete a pod | `name`, `namespace` |
+| `get_pod_logs` | Get pod logs | `name`, `namespace` |
+| `exec_in_pod` | Execute command in pod | `name`, `command` |
+
+### Deployment Tools
+| Tool | Description | Required Params |
+|------|-------------|-----------------|
+| `list_deployments` | List deployments | `namespace` |
+| `get_deployment` | Get deployment details | `name`, `namespace` |
+| `create_deployment` | Create a deployment | `name`, `namespace`, `image` |
+| `update_deployment` | Update deployment | `name`, `namespace` |
+| `delete_deployment` | Delete deployment | `name`, `namespace` |
+| `scale_deployment` | Scale replicas | `name`, `namespace`, `replicas` |
+| `rollout_status` | Check rollout status | `name`, `namespace` |
+| `rollout_undo` | Rollback deployment | `name`, `namespace` |
+| `restart_deployment` | Rolling restart | `name`, `namespace` |
+
+### Service Tools
+| Tool | Description | Required Params |
+|------|-------------|-----------------|
+| `list_services` | List services | `namespace` |
+| `get_service` | Get service details | `name`, `namespace` |
+| `create_service` | Create service | `name`, `namespace` |
+| `delete_service` | Delete service | `name`, `namespace` |
+| `expose_deployment` | Expose deployment as service | `deployment_name`, `namespace` |
+
+### Other Tools
+| Tool | Description |
+|------|-------------|
+| `list_nodes` / `get_node` | Node management |
+| `cordon_node` / `uncordon_node` / `drain_node` | Node maintenance |
+| `list_events` / `get_resource_events` | Event queries |
+| `list_configmaps` / `get_configmap` / `create_configmap` | ConfigMap management |
+| `list_secrets` / `get_secret` / `create_secret` | Secret management (values redacted) |
+| `list_helm_releases` / `install_helm_chart` / `uninstall_helm_release` | Helm management |
+| `get_cluster_info` / `get_node_metrics` / `get_pod_metrics` | Cluster info and metrics |
+| `api_resources` / `apply_manifest` | API discovery and manifest apply |
+
+---
+
+## 🧪 Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=k8s_agent --cov-report=html
+
+# Run specific test file
+pytest tests/unit/test_shared.py
+
+# Run tests matching pattern
+pytest -k "test_mcp_server"
+```
+
+---
+
+## 📦 Dependencies
+
+| Package | Usage |
+|---------|-------|
+| `anthropic` | Claude API client |
+| `mcp` | MCP protocol SDK |
+| `kubernetes` | K8s Python client |
+| `pydantic` + `pydantic-settings` | Type validation + config |
+| `typer` | CLI framework |
+| `fastapi` + `uvicorn` | Web UI server |
+| `structlog` | Structured logging |
+| `httpx` | HTTP client (MCP HTTP transport) |
+| `tenacity` | Retry logic |
+| `pyyaml` | YAML config parsing |
+| `rich` | Terminal formatting |
+
+---
+
+## 🔒 Security Notes
+
+- Secrets values are **redacted by default** in `get_secret` — use `reveal=True` with caution
+- Destructive operations (`delete_*`, `drain_node`, `uninstall_helm_release`) can be **blocklisted** via config
+- MCP access control supports **allow/deny lists** with wildcard matching
+- API keys are loaded from **environment variables** or YAML config, never hardcoded
+- The Web UI uses **WebSocket for streaming**, no API keys exposed to the browser
+
+---
+
+## 📄 License
+
+MIT License — see [LICENSE](LICENSE) file.
+
+---
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create your feature branch: `git checkout -b feature/my-feature`
+3. Write a custom skill and add it to `skills/builtin/`
+4. Add tests
+5. Submit a pull request
+
+See the **Extend MCP / Skill / Agent** sections above for extension guides.

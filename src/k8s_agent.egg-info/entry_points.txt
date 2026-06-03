@@ -1,0 +1,2 @@
+[console_scripts]
+k8s-agent = k8s_agent.cli.main:app

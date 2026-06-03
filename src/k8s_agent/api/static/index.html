@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K8s Agent - Kubernetes 智能助手</title>
+<!-- vis-network for topology visualization -->
+<script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/dist/vis-network.min.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/dist/vis-network.min.css" rel="stylesheet">
+<!-- marked.js for markdown rendering -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<style>
+/* ============================================================
+   Dark Theme for K8s Agent Web UI
+   ============================================================ */
+:root {
+  --bg: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --text-muted: #8b949e;
+  --accent: #58a6ff;
+  --accent-hover: #79c0ff;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d2991d;
+  --orange: #d97706;
+  --purple: #a371f7;
+  --pink: #f472b6;
+  --code-bg: #1c2128;
+  --graph-bg: #1a1e26;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---------- Header ---------- */
+header {
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+header .logo {
+  font-size: 18px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+header .logo .icon { font-size: 24px; }
+header .logo span { color: var(--accent); }
+header .status { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+header .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+header .status .dot.error { background: var(--red); }
+header .header-actions { display: flex; gap: 8px; align-items: center; }
+header .header-actions button {
+  padding: 5px 12px;
+  font-size: 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+}
+header .header-actions button:hover { background: var(--border); }
+header .header-actions button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* ---------- Layout ---------- */
+.main-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 260px;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.sidebar h3 { font-size: 12px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; margin-top: 12px; }
+.sidebar .session-item {
+  padding: 8px 12px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; color: var(--text-muted); transition: background 0.15s;
+}
+.sidebar .session-item:hover { background: var(--bg-tertiary); color: var(--text); }
+.sidebar .session-item.active { background: var(--bg-tertiary); color: var(--accent); }
+.sidebar .skill-item {
+  padding: 6px 10px; font-size: 12px; color: var(--text-muted);
+  border-left: 2px solid var(--border); margin-left: 6px;
+}
+.sidebar .btn {
+  padding: 6px 12px; font-size: 12px; background: var(--bg-tertiary);
+  border: 1px solid var(--border); color: var(--text); border-radius: 6px;
+  cursor: pointer; text-align: center;
+}
+.sidebar .btn:hover { background: var(--border); }
+
+/* Content area: chat + graph */
+.content-area {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* Chat panel */
+.chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 300px;
+  transition: flex 0.3s ease;
+}
+.chat-area.collapsed { flex: 0.45; }
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Graph panel */
+.graph-panel {
+  flex: 0;
+  background: var(--graph-bg);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: flex 0.3s ease;
+}
+.graph-panel.visible { flex: 0.55; }
+
+.graph-header {
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.graph-header h3 { font-size: 14px; display: flex; align-items: center; gap: 8px; }
+.graph-header .graph-actions { display: flex; gap: 6px; }
+.graph-header .graph-actions button {
+  padding: 4px 10px; font-size: 11px; background: var(--bg-tertiary);
+  border: 1px solid var(--border); color: var(--text); border-radius: 4px; cursor: pointer;
+}
+.graph-header .graph-actions button:hover { background: var(--border); }
+
+.graph-legend {
+  padding: 6px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.graph-legend .legend-item { display: flex; align-items: center; gap: 4px; }
+.graph-legend .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+.graph-container {
+  flex: 1;
+  min-height: 200px;
+}
+
+.graph-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: center;
+  padding: 20px;
+  flex-direction: column;
+  gap: 12px;
+}
+.graph-placeholder .icon { font-size: 48px; opacity: 0.3; }
+
+/* Messages */
+.message {
+  display: flex;
+  gap: 12px;
+  max-width: 100%;
+  width: 100%;
+  animation: fadeIn 0.2s ease-in;
+}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.message.user { align-self: flex-end; flex-direction: row-reverse; }
+.message .avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; flex-shrink: 0;
+}
+.message.assistant .avatar { background: var(--purple); }
+.message.user .avatar { background: var(--accent); }
+
+.message .bubble {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 16px;
+  line-height: 1.6;
+  font-size: 14px;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.message.user .bubble { background: #1a3a5c; border-color: #1f4a7a; }
+.message .bubble pre {
+  background: var(--code-bg); border-radius: 8px; padding: 12px; margin: 8px 0;
+  overflow-x: auto; font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 13px; border: 1px solid var(--border);
+}
+.message .bubble code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 13px; background: var(--code-bg); padding: 2px 6px; border-radius: 3px;
+}
+.message .bubble pre code { padding: 0; background: none; }
+.message .bubble h1, .message .bubble h2, .message .bubble h3 { margin: 12px 0 4px; }
+.message .bubble p { margin: 4px 0; }
+.message .bubble ul, .message .bubble ol { padding-left: 20px; margin: 4px 0; }
+.message .bubble table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
+.message .bubble th, .message .bubble td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+.message .bubble th { background: var(--bg-tertiary); font-weight: 600; color: var(--accent); }
+.message .bubble tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+.message .bubble blockquote { border-left: 3px solid var(--accent); padding: 4px 12px; margin: 8px 0; color: var(--text-muted); }
+.message .bubble hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+.message .bubble a { color: var(--accent); text-decoration: underline; }
+
+/* Tool calls */
+.tool-call {
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+  border-left: 3px solid var(--yellow); border-radius: 6px;
+  padding: 8px 12px; margin: 8px 0; font-size: 12px;
+}
+.tool-call .tool-name { color: var(--yellow); font-weight: 600; }
+.tool-call .tool-params { color: var(--text-muted); margin-top: 4px; }
+.tool-call .tool-result { color: var(--green); margin-top: 4px; border-top: 1px solid var(--border); padding-top: 4px; }
+.tool-call .viz-link {
+  display: inline-block; margin-top: 6px; color: var(--accent); cursor: pointer;
+  font-size: 12px; text-decoration: underline;
+}
+.tool-call .viz-link:hover { color: var(--accent-hover); }
+
+/* Typing */
+.typing { display: flex; gap: 4px; padding: 8px 16px; }
+.typing span { width: 6px; height: 6px; background: var(--text-muted); border-radius: 50%; animation: bounce 1.4s infinite ease-in-out; }
+.typing span:nth-child(2) { animation-delay: 0.2s; }
+.typing span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bounce { 0%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-6px); } }
+
+/* Input */
+.input-area {
+  background: var(--bg-secondary); border-top: 1px solid var(--border); padding: 14px 20px; flex-shrink: 0;
+}
+.input-row {
+  display: flex; gap: 10px; align-items: flex-end; max-width: 100%; width: 100%; margin: 0 auto;
+}
+.input-row textarea {
+  flex: 1; background: var(--bg-tertiary); border: 1px solid var(--border);
+  border-radius: 10px; color: var(--text); padding: 10px 14px;
+  font-size: 14px; font-family: inherit; resize: none;
+  min-height: 42px; max-height: 150px; outline: none; transition: border-color 0.15s;
+}
+.input-row textarea:focus { border-color: var(--accent); }
+.input-row button {
+  padding: 10px 20px; background: var(--accent); color: #fff;
+  border: none; border-radius: 10px; font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: background 0.15s; white-space: nowrap;
+}
+.input-row button:hover { background: var(--accent-hover); }
+.input-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+.input-hint { font-size: 11px; color: var(--text-muted); margin-top: 6px; text-align: center; }
+
+/* Responsive */
+@media (max-width: 900px) {
+  .sidebar { display: none; }
+  .graph-panel.visible { flex: 1; }
+  .chat-area.collapsed { display: none; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <span class="icon">☸️</span>
+    <span>K8s Agent</span>
+  </div>
+  <div class="header-actions">
+    <button id="btn-toggle-graph" onclick="toggleGraphPanel()" title="Toggle topology graph">📊 Graph</button>
+  </div>
+  <div class="status">
+    <span class="dot" id="status-dot"></span>
+    <span id="status-text">Connected</span>
+  </div>
+</header>
+
+<div class="main-container">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <h3>📁 Sessions</h3>
+    <div id="sessions-list">
+      <div class="session-item active" data-id="default">Current Session</div>
+    </div>
+    <button class="btn" onclick="newSession()">+ New Session</button>
+
+    <h3>🧩 Skills</h3>
+    <div id="skills-list">
+      <div class="skill-item">Loading skills...</div>
+    </div>
+
+    <h3>📊 Visualization</h3>
+    <div style="font-size:12px;color:var(--text-muted)">
+      Try asking:
+      <ul style="margin:8px 0;padding-left:16px;">
+        <li>"Show me the topology of production namespace"</li>
+        <li>"Visualize all pods and their nodes"</li>
+        <li>"Draw the relationship between services and pods in default"</li>
+        <li>"查询k8s中的pod并可视化展示"</li>
+      </ul>
+    </div>
+
+    <h3>⚙️ Config</h3>
+    <div id="config-info" style="font-size:12px;color:var(--text-muted)">Loading...</div>
+  </aside>
+
+  <!-- Content: Chat + Graph -->
+  <div class="content-area">
+    <!-- Chat Area -->
+    <div class="chat-area" id="chat-area">
+      <div class="chat-messages" id="chat-messages">
+        <div class="message assistant">
+          <div class="avatar">☸️</div>
+          <div class="bubble">
+            <p>👋 Hi! I'm <strong>K8s Agent</strong> — an LLM-powered Kubernetes assistant.</p>
+            <p>I can help with:</p>
+            <ul>
+              <li>🔍 <strong>Listing and inspecting</strong> pods, deployments, services, nodes</li>
+              <li>📊 <strong>Visualizing</strong> your cluster topology — try <em>"Show me the topology of default namespace"</em></li>
+              <li>📜 <strong>Viewing logs</strong> and cluster events</li>
+              <li>🚀 <strong>Creating and scaling</strong> deployments</li>
+              <li>🔧 <strong>Troubleshooting</strong> crashing pods and connectivity issues</li>
+              <li>💡 <strong>Analyzing</strong> resource usage and cost optimization</li>
+            </ul>
+            <p>Try: <em>"查询default namespace中的pod并可视化展示"</em> or <em>"Show me the topology of production"</em></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="input-area">
+        <div class="input-row">
+          <textarea id="user-input" placeholder="Ask about your K8s cluster... (try 'visualize pods in default')"
+            rows="1" onkeydown="handleKeyDown(event)"></textarea>
+          <button id="send-btn" onclick="sendMessage()">Send</button>
+        </div>
+        <div class="input-hint">Enter to send, Shift+Enter for newline · Use "visualize" or "topology" for graphs</div>
+      </div>
+    </div>
+
+    <!-- Graph Panel -->
+    <div class="graph-panel" id="graph-panel">
+      <div class="graph-header">
+        <h3>📊 <span id="graph-title">Topology Graph</span></h3>
+        <div class="graph-actions">
+          <button onclick="fitGraph()" title="Fit to view">🔍 Fit</button>
+          <button onclick="resetGraph()" title="Reset layout">🔄 Reset</button>
+          <button onclick="closeGraphPanel()" title="Close panel">✕</button>
+        </div>
+      </div>
+      <div class="graph-legend" id="graph-legend">
+        <div class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span> Pod</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span> Deployment</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#8b5cf6"></span> StatefulSet</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#10b981"></span> Service</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#ef4444"></span> Node</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#ec4899"></span> PVC</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#6366f1"></span> Ingress</div>
+      </div>
+      <div class="graph-container" id="graph-container">
+        <div class="graph-placeholder" id="graph-placeholder">
+          <div class="icon">📊</div>
+          <div>Ask the agent to visualize your cluster resources</div>
+          <div style="font-size:12px">Try: "Show me the topology of default namespace"</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// K8s Agent Web UI — Chat + Topology Visualization
+// ============================================================
+
+const chatMessages = document.getElementById('chat-messages');
+const userInput = document.getElementById('user-input');
+const sendBtn = document.getElementById('send-btn');
+const statusDot = document.getElementById('status-dot');
+const statusText = document.getElementById('status-text');
+const graphPanel = document.getElementById('graph-panel');
+const graphContainer = document.getElementById('graph-container');
+const graphPlaceholder = document.getElementById('graph-placeholder');
+const graphTitle = document.getElementById('graph-title');
+const graphLegend = document.getElementById('graph-legend');
+const btnToggleGraph = document.getElementById('btn-toggle-graph');
+
+let ws = null;
+let currentSessionId = 'default';
+let currentAssistantBubble = null;
+let currentToolCalls = [];
+let graphNetwork = null;
+let graphData = { nodes: [], edges: [] };
+let hasGraph = false;
+
+// ── Color mapping for resource types ──
+const GROUP_COLORS = {
+  pod: { bg: '#1d4ed8', border: '#3b82f6', highlight: '#60a5fa' },
+  deployment: { bg: '#92400e', border: '#f59e0b', highlight: '#fbbf24' },
+  statefulset: { bg: '#6b21a8', border: '#8b5cf6', highlight: '#a78bfa' },
+  daemonset: { bg: '#4c1d95', border: '#7c3aed', highlight: '#8b5cf6' },
+  replicaset: { bg: '#78350f', border: '#d97706', highlight: '#f59e0b' },
+  service: { bg: '#064e3b', border: '#10b981', highlight: '#34d399' },
+  node: { bg: '#7f1d1d', border: '#ef4444', highlight: '#f87171' },
+  ingress: { bg: '#312e81', border: '#6366f1', highlight: '#818cf8' },
+  pvc: { bg: '#831843', border: '#ec4899', highlight: '#f472b6' },
+};
+
+const GROUP_ICONS = {
+  pod: '⬡', deployment: '⎔', statefulset: '⧩', daemonset: '◉',
+  replicaset: '◎', service: '⬤', node: '⬢', ingress: '⇉', pvc: '⬒',
+};
+
+// ── WebSocket ──
+function connect() {
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${location.host}/ws/chat`;
+
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    statusDot.classList.remove('error');
+    statusText.textContent = 'Connected';
+  };
+
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    handleStreamEvent(data);
+  };
+
+  ws.onclose = () => {
+    statusDot.classList.add('error');
+    statusText.textContent = 'Reconnecting...';
+    setTimeout(connect, 3000);
+  };
+
+  ws.onerror = () => {
+    statusDot.classList.add('error');
+    statusText.textContent = 'Connection error';
+  };
+}
+
+// ── Stream Event Handler ──
+function handleStreamEvent(data) {
+  switch (data.type) {
+    case 'text_delta':
+      appendText(data.text || '');
+      break;
+    case 'tool_use_start':
+      currentToolCalls.push({
+        name: data.tool_name,
+        id: data.tool_use_id,
+        element: addToolCallElement(data.tool_name, data.tool_use_id)
+      });
+      break;
+    case 'tool_use_end':
+      const tcEnd = currentToolCalls.find(t => t.id === data.tool_use_id);
+      if (tcEnd) tcEnd.input = data.tool_input || {};
+      break;
+    case 'tool_executing':
+      updateToolCallStatus(data.tool_name, 'Executing...');
+      break;
+    case 'tool_result':
+      const tcRes = currentToolCalls.find(t => t.id === data.tool_use_id);
+      if (tcRes) {
+        tcRes.result = data.result;
+        updateToolCallResult(tcRes.element, data.result);
+        // Add "View in Graph" link for topology-aware results
+        if (data.result && (data.result.includes('"topology"') || data.result.includes('"nodes"'))) {
+          addVizLink(tcRes.element, data.result);
+        }
+      }
+      break;
+    case 'visualization':
+      // New: visualization event from backend
+      if (data.data && data.data.nodes) {
+        addVizToCurrentMessage(data.data);
+        renderGraph(data.data);
+      }
+      break;
+    case 'message_stop':
+      currentAssistantBubble = null;
+      currentToolCalls = [];
+      scrollToBottom();
+      sendBtn.disabled = false;
+      userInput.disabled = false;
+      userInput.focus();
+      break;
+    case 'error':
+      appendText('\n\n❌ **Error:** ' + (data.message || 'Unknown error'));
+      currentAssistantBubble = null;
+      sendBtn.disabled = false;
+      userInput.disabled = false;
+      break;
+  }
+}
+
+// ── Configure marked.js ──
+marked.setOptions({
+  breaks: true,     // Convert \n to <br>
+  gfm: true,        // GitHub Flavored Markdown (tables, strikethrough, etc.)
+});
+
+// ── Message Display ──
+function appendText(text) {
+  if (!currentAssistantBubble) {
+    currentAssistantBubble = addMessageBubble('assistant', '');
+  }
+  const content = currentAssistantBubble.querySelector('.bubble-content');
+  // Accumulate raw markdown text
+  content._rawMarkdown = (content._rawMarkdown || '') + text;
+  // Render markdown to HTML
+  content.innerHTML = marked.parse(content._rawMarkdown);
+  scrollToBottom();
+}
+
+function addMessageBubble(role, text) {
+  const div = document.createElement('div');
+  div.className = `message ${role}`;
+  // For assistant messages, render markdown; for user messages, escape HTML
+  const rendered = role === 'assistant' ? marked.parse(text) : escapeHtml(text);
+  div.innerHTML = `
+    <div class="avatar">${role === 'user' ? '👤' : '☸️'}</div>
+    <div class="bubble">
+      <div class="bubble-content">${rendered}</div>
+    </div>
+  `;
+  // Store raw markdown for streaming accumulation
+  if (role === 'assistant') {
+    const content = div.querySelector('.bubble-content');
+    content._rawMarkdown = text;
+  }
+  const typing = document.querySelector('.typing');
+  if (typing) typing.remove();
+  chatMessages.appendChild(div);
+  scrollToBottom();
+  return div;
+}
+
+function addToolCallElement(toolName, toolId) {
+  if (!currentAssistantBubble) {
+    currentAssistantBubble = addMessageBubble('assistant', '');
+  }
+  const bubble = currentAssistantBubble.querySelector('.bubble');
+  const tcDiv = document.createElement('div');
+  tcDiv.className = 'tool-call';
+  tcDiv.dataset.toolId = toolId;
+  tcDiv.innerHTML = `
+    <div class="tool-name">🔧 ${escapeHtml(toolName)}</div>
+    <div class="tool-params">Preparing...</div>
+    <div class="tool-result" style="display:none"></div>
+  `;
+  bubble.appendChild(tcDiv);
+  return tcDiv;
+}
+
+function updateToolCallStatus(toolName, status) {
+  const tc = currentToolCalls.find(t => t.name === toolName);
+  if (tc && tc.element) {
+    tc.element.querySelector('.tool-params').textContent = status;
+  }
+}
+
+function updateToolCallResult(element, result) {
+  const resultEl = element.querySelector('.tool-result');
+  resultEl.style.display = 'block';
+  try {
+    const parsed = JSON.parse(result);
+    if (parsed.error) {
+      resultEl.classList.add('tool-error');
+      resultEl.textContent = '❌ ' + (parsed.message || result);
+    } else {
+      // Show summary if available
+      let preview = result.substring(0, 250);
+      if (parsed.summary) preview = parsed.summary;
+      else if (parsed.topology && parsed.topology.summary) preview = parsed.topology.summary;
+      else if (parsed.nodes) preview = `Found ${parsed.nodes.length} nodes and ${parsed.edges?.length || 0} relationships`;
+      else if (parsed.pods) preview = `Found ${parsed.pods.length} pods`;
+      else if (parsed.deployments) preview = `Found ${parsed.deployments.length} deployments`;
+      resultEl.textContent = '✅ ' + preview;
+    }
+  } catch {
+    resultEl.textContent = result.substring(0, 250);
+  }
+}
+
+function addVizLink(element, result) {
+  // Check if there's already a viz link
+  if (element.querySelector('.viz-link')) return;
+  const link = document.createElement('span');
+  link.className = 'viz-link';
+  link.textContent = '📊 View in Graph →';
+  link.onclick = () => {
+    try {
+      const data = JSON.parse(result);
+      if (data.topology) {
+        renderGraph(data.topology);
+      } else {
+        // Try to extract nodes/edges
+        renderGraph({ nodes: data.nodes || [], edges: data.edges || [], title: 'Resources' });
+      }
+    } catch (e) {
+      // Can't parse, ignore
+    }
+  };
+  element.appendChild(link);
+}
+
+function addVizToCurrentMessage(data) {
+  // Add a note in the chat that a visualization is available
+  if (currentAssistantBubble) {
+    const bubble = currentAssistantBubble.querySelector('.bubble');
+    const vizNote = document.createElement('div');
+    vizNote.className = 'tool-call';
+    vizNote.style.borderLeftColor = 'var(--green)';
+    vizNote.innerHTML = `
+      <div style="color:var(--green);font-weight:600;">📊 Visualization Ready</div>
+      <div>${data.title || 'Topology Graph'} — ${data.nodes.length} nodes, ${data.edges.length} relationships</div>
+    `;
+    bubble.appendChild(vizNote);
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function showTyping() {
+  const typing = document.createElement('div');
+  typing.className = 'typing message';
+  typing.innerHTML = '<span></span><span></span><span></span>';
+  chatMessages.appendChild(typing);
+  scrollToBottom();
+}
+
+function scrollToBottom() {
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// ── Graph Rendering (vis-network) ──
+function renderGraph(data) {
+  if (!data || !data.nodes || data.nodes.length === 0) return;
+
+  const nodes = data.nodes.map(n => {
+    const group = n.group || n.type || 'unknown';
+    const colors = GROUP_COLORS[group] || GROUP_COLORS.pod;
+    const icon = GROUP_ICONS[group] || '●';
+    const phase = n.metadata?.phase || '';
+    const status = n.metadata?.status || '';
+
+    // Determine border width based on status
+    let borderWidth = 2;
+    let shape = 'dot';
+    if (group === 'pod') {
+      shape = 'hexagon';
+      if (phase === 'Running' || phase === 'Succeeded') borderWidth = 2;
+      else if (phase === 'Pending') borderWidth = 3;
+      else borderWidth = 4; // Failed/Unknown — thicker = problem
+    } else if (group === 'node') {
+      shape = 'triangle';
+      if (status === 'True') borderWidth = 2;
+      else borderWidth = 4;
+    } else if (group === 'service') {
+      shape = 'diamond';
+    } else if (group === 'deployment' || group === 'statefulset') {
+      shape = 'box';
+      const ready = n.metadata?.ready || 0;
+      const replicas = n.metadata?.replicas || 0;
+      if (ready < replicas) borderWidth = 4;
+    }
+
+    // Build tooltip
+    let title = `<b>${n.label}</b><br><i>${group}</i>`;
+    if (n.metadata) {
+      for (const [k, v] of Object.entries(n.metadata)) {
+        if (v && typeof v !== 'object') title += `<br>${k}: ${v}`;
+        else if (v && typeof v === 'object' && !Array.isArray(v)) {
+          for (const [sk, sv] of Object.entries(v).slice(0, 4)) {
+            title += `<br>${sk}: ${sv}`;
+          }
+        }
+      }
+    }
+
+    return {
+      id: n.id,
+      label: n.label,
+      group: group,
+      shape: shape,
+      color: {
+        background: colors.bg,
+        border: colors.border,
+        highlight: { background: colors.highlight, border: colors.border },
+      },
+      borderWidth: borderWidth,
+      title: title,
+      size: group === 'node' ? 30 : group === 'service' ? 22 : 18,
+      font: { color: '#c9d1d9', size: 12, face: 'sans-serif' },
+    };
+  });
+
+  const edges = (data.edges || []).map(e => ({
+    from: e.from,
+    to: e.to,
+    label: e.label || e.type || '',
+    arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+    color: { color: '#4a5568', highlight: '#58a6ff' },
+    font: { color: '#8b949e', size: 9, align: 'middle' },
+    smooth: { type: 'curvedCW', roundness: 0.2 },
+  }));
+
+  graphData = { nodes, edges };
+
+  // Show panel
+  openGraphPanel();
+  graphTitle.textContent = data.title || 'Topology Graph';
+  graphPlaceholder.style.display = 'none';
+
+  // Create or update network
+  if (graphNetwork) {
+    graphNetwork.setData({ nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) });
+    setTimeout(() => graphNetwork.fit({ animation: true }), 200);
+  } else {
+    graphNetwork = new vis.Network(graphContainer, {
+      nodes: new vis.DataSet(nodes),
+      edges: new vis.DataSet(edges),
+    }, {
+      physics: {
+        solver: 'forceAtlas2Based',
+        forceAtlas2Based: { gravitationalConstant: -40, centralGravity: 0.01, springLength: 150, springConstant: 0.05 },
+        stabilization: { iterations: 100 },
+      },
+      interaction: {
+        hover: true,
+        tooltipDelay: 200,
+        zoomView: true,
+        dragView: true,
+        navigationButtons: false,
+      },
+      layout: { improvedLayout: true },
+    });
+
+    graphNetwork.on('click', function(params) {
+      if (params.nodes.length > 0) {
+        const nodeId = params.nodes[0];
+        const nodeData = nodes.find(n => n.id === nodeId);
+        if (nodeData) {
+          // Could show a detail panel here
+          console.log('Node clicked:', nodeData);
+        }
+      }
+    });
+  }
+
+  hasGraph = true;
+  btnToggleGraph.classList.add('active');
+}
+
+function openGraphPanel() {
+  graphPanel.classList.add('visible');
+  document.getElementById('chat-area').classList.add('collapsed');
+  btnToggleGraph.classList.add('active');
+  setTimeout(() => { if (graphNetwork) graphNetwork.fit({ animation: true }); }, 400);
+}
+
+function closeGraphPanel() {
+  graphPanel.classList.remove('visible');
+  document.getElementById('chat-area').classList.remove('collapsed');
+  btnToggleGraph.classList.remove('active');
+}
+
+function toggleGraphPanel() {
+  if (graphPanel.classList.contains('visible')) {
+    closeGraphPanel();
+  } else if (hasGraph) {
+    openGraphPanel();
+  }
+  // If no graph data, do nothing (or could show placeholder)
+}
+
+function fitGraph() {
+  if (graphNetwork) graphNetwork.fit({ animation: true });
+}
+
+function resetGraph() {
+  if (graphNetwork && graphData.nodes.length > 0) {
+    graphNetwork.setData({
+      nodes: new vis.DataSet(graphData.nodes),
+      edges: new vis.DataSet(graphData.edges),
+    });
+    setTimeout(() => graphNetwork.fit({ animation: true }), 500);
+  }
+}
+
+// ── Send Message ──
+function sendMessage() {
+  const text = userInput.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+  addMessageBubble('user', text);
+  userInput.value = '';
+  userInput.style.height = '42px';
+  showTyping();
+  sendBtn.disabled = true;
+  userInput.disabled = true;
+
+  ws.send(JSON.stringify({
+    message: text,
+    session_id: currentSessionId,
+    namespace: 'default',
+  }));
+}
+
+function handleKeyDown(event) {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    sendMessage();
+  }
+}
+
+userInput.addEventListener('input', () => {
+  userInput.style.height = '42px';
+  userInput.style.height = Math.min(userInput.scrollHeight, 150) + 'px';
+});
+
+// ── Session ──
+function newSession() {
+  currentSessionId = 'session-' + Date.now();
+  chatMessages.innerHTML = '';
+  addMessageBubble('assistant', `New session created: ${currentSessionId}\n\nHow can I help? Try "Show topology of default namespace"`);
+  closeGraphPanel();
+  graphData = { nodes: [], edges: [] };
+  hasGraph = false;
+}
+
+// ── Sidebar ──
+async function loadSidebarInfo() {
+  try {
+    const skillsResp = await fetch('/api/skills');
+    const skills = await skillsResp.json();
+    const skillsList = document.getElementById('skills-list');
+    skillsList.innerHTML = skills.map(s => `
+      <div class="skill-item" title="${s.description}">
+        📦 <strong>${s.name}</strong><br>
+        <span style="font-size:11px">${s.tools.map(t => t.name).slice(0,3).join(', ')}</span>
+      </div>
+    `).join('') || '<div class="skill-item">No skills loaded</div>';
+
+    const configResp = await fetch('/api/config');
+    const config = await configResp.json();
+    document.getElementById('config-info').innerHTML = `
+      Model: ${config.llm_model}<br>
+      K8s: ${config.k8s_auth_mode}<br>
+      MCP: ${config.mcp_transport}
+    `;
+  } catch (e) {
+    console.error('Sidebar load error:', e);
+  }
+}
+
+// ── Init ──
+function showWelcome() {
+  // Clear any static content
+  chatMessages.innerHTML = '';
+  const welcomeMsg = `👋 你好！我是 **K8s Agent** —— 基于大模型的 Kubernetes 智能助手。
+
+我能帮你：
+
+| 能力 | 描述 |
+|------|------|
+| 📋 **资源查看** | 查看 Pods、Deployments、Services、Nodes 等 K8s 资源 |
+| 🔍 **日志与事件** | 查看 Pod 日志、集群事件，快速定位问题 |
+| 🗺️ **拓扑可视化** | 生成 Pod、Service、Deployment 之间的交互关系图 |
+| 🚀 **部署管理** | 创建、更新、扩缩容、回滚 Deployment |
+| 🔧 **节点管理** | Cordon、Drain、Uncordon 节点 |
+| 📦 **Helm 操作** | 安装、升级、卸载 Helm Chart |
+| 🐳 **容器调试** | Exec 进入容器排查问题 |
+
+试试这些：
+- *"查看 default 命名空间的所有 Pod 状态"*
+- *"可视化 default 命名空间中的资源关系"*
+- *"把我的 nginx 扩容到 3 个副本"*
+- *"排查 payment-service 为什么一直重启"*`;
+  addMessageBubble('assistant', welcomeMsg);
+}
+showWelcome();
+connect();
+loadSidebarInfo();
+userInput.focus();
+</script>
+</body>
+</html>
