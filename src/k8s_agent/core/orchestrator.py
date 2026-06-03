@@ -548,9 +548,9 @@ class MasterAgent:
         if tool_name == "delegate":
             return await self._handle_delegate(tool_input)
 
-        # Handle prefixed MCP tools
-        if "/" in tool_name:
-            server, name = tool_name.split("/", 1)
+        # Handle prefixed MCP tools (format: server__tool_name)
+        if "__" in tool_name:
+            server, name = tool_name.split("__", 1)
             if self.mcp_client_manager:
                 try:
                     return await self.mcp_client_manager.call_tool(

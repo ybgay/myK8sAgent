@@ -18,7 +18,7 @@ import asyncio
 import logging
 from typing import Any
 
-from mcp.server import Server, NotificationOptions, InitializationOptions
+from mcp.server.fastmcp import FastMCP
 
 from k8s_agent.mcp_server.tools import register_all_tools
 from k8s_agent.shared.config import get_settings
@@ -30,28 +30,28 @@ logger = get_logger(__name__)
 def create_k8s_mcp_server(
     server_name: str = "k8s-agent-mcp-server",
     server_version: str = "0.1.0",
-) -> Server:
+) -> FastMCP:
     """Create and configure the Kubernetes MCP Server.
 
     Registers all K8s tools (pods, deployments, services, etc.) on the server.
-    The server is an MCP Server instance ready to be connected to a transport.
+    Uses FastMCP which provides the @server.tool() decorator API.
 
     Args:
         server_name: Name for the MCP server.
         server_version: Version string.
 
     Returns:
-        Configured mcp.server.Server instance.
+        Configured FastMCP instance.
     """
     settings = get_settings()
 
-    # Create MCP server with capabilities
-    server = Server(
+    # Create FastMCP server
+    server = FastMCP(
         name=server_name,
-        version=server_version,
+        instructions=f"Kubernetes MCP Server v{server_version} — provides K8s cluster operations",
     )
 
-    # Register all Kubernetes tools
+    # Register all Kubernetes tools via @server.tool() decorators
     register_all_tools(server)
 
     logger.info(
@@ -66,18 +66,11 @@ def create_k8s_mcp_server(
 
 async def run_stdio_server() -> None:
     """Run the MCP server over stdio transport (for Claude Desktop etc.)."""
-    from mcp.server.stdio import stdio_server
-
     setup_logging(level="info", output_format="json")
     server = create_k8s_mcp_server()
 
     logger.info("mcp_server_starting", transport="stdio")
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
-        )
+    await server.run_stdio_async()
 
 
 async def run_http_server(host: str = "0.0.0.0", port: int = 3100) -> None:
@@ -87,54 +80,14 @@ async def run_http_server(host: str = "0.0.0.0", port: int = 3100) -> None:
         host: Host to bind to.
         port: Port to listen on.
     """
-    from mcp.server.streamable_http import StreamableHTTPServerTransport
-
-    # We need a simple HTTP server to host the transport
-    import http.server
-    import json
-
     setup_logging(level="info", output_format="pretty")
     server = create_k8s_mcp_server()
 
     logger.info("mcp_server_starting", transport="http", host=host, port=port)
-
-    transport = StreamableHTTPServerTransport()
-
-    class MCPHandler(http.server.BaseHTTPRequestHandler):
-        def do_POST(self):
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length)
-            # Route to MCP transport
-            response = asyncio.run(transport.handle_request(body.decode("utf-8")))
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(response.encode("utf-8"))
-
-        def do_GET(self):
-            if self.path == "/health":
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "ok", "server": "k8s-mcp-server"}).encode())
-            else:
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    "server": "k8s-agent-mcp-server",
-                    "version": "0.1.0",
-                    "tools": "/mcp",
-                    "health": "/health",
-                }).encode())
-
-    httpd = http.server.HTTPServer((host, port), MCPHandler)
-    logger.info(f"K8s MCP Server listening on http://{host}:{port}")
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        logger.info("mcp_server_shutting_down")
-        httpd.shutdown()
+    # Override default settings for host/port
+    server.settings.host = host
+    server.settings.port = port
+    await server.run_streamable_http_async()
 
 
 if __name__ == "__main__":

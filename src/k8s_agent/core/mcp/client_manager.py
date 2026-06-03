@@ -164,6 +164,9 @@ class MCPClientManager:
 
         # Resolve environment variables
         env = os.environ.copy()
+        # Force UTF-8 encoding for the subprocess (fixes GBK decode errors on Windows)
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         for key, value in config.env.items():
             # Resolve ${VAR} references
             import re
@@ -180,6 +183,8 @@ class MCPClientManager:
                 stderr=subprocess.PIPE,
                 env=env,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             logger.info(
                 "mcp_stdio_process_started",
@@ -202,8 +207,8 @@ class MCPClientManager:
                 "capabilities": {},
                 "clientInfo": {"name": "k8s-agent", "version": "0.1.0"},
             })
-            # Send initialized notification
-            await self._send_jsonrpc(conn, "notifications/initialized", {})
+            # Send initialized notification (no response expected!)
+            await self._send_notification(conn, "notifications/initialized", {})
         except Exception as e:
             process.kill()
             raise RuntimeError(
@@ -288,10 +293,45 @@ class MCPClientManager:
         else:
             raise RuntimeError(f"No active transport for server '{conn.config.name}'")
 
+    async def _send_notification(
+        self,
+        conn: MCPConnection,
+        method: str,
+        params: dict[str, Any],
+    ) -> None:
+        """Send a JSON-RPC notification (no response expected).
+
+        Notifications have no "id" field and the server should not respond.
+        """
+        notification = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        }
+
+        if conn.config.transport == "stdio" and conn.process:
+            await self._stdio_notify(conn, notification)
+        elif conn.config.transport == "http" and conn.http_client:
+            # For HTTP, send as a POST without waiting for response body
+            await conn.http_client.post("/mcp", json=notification)
+
+    async def _stdio_notify(
+        self, conn: MCPConnection, notification: dict[str, Any]
+    ) -> None:
+        """Send a JSON-RPC notification over stdio (fire-and-forget)."""
+        process = conn.process
+        if not process or not process.stdin:
+            raise RuntimeError(f"stdio process not running for '{conn.config.name}'")
+
+        notification_str = json.dumps(notification) + "\n"
+        process.stdin.write(notification_str)
+        process.stdin.flush()
+        # No response read — notifications don't get responses
+
     async def _stdio_request(
         self, conn: MCPConnection, request: dict[str, Any]
     ) -> Any:
-        """Send JSON-RPC over stdin/stdout to a subprocess."""
+        """Send JSON-RPC over stdin/stdout to a subprocess (non-blocking)."""
         process = conn.process
         if not process or not process.stdin or not process.stdout:
             raise RuntimeError(f"stdio process not running for '{conn.config.name}'")
@@ -300,11 +340,14 @@ class MCPClientManager:
         process.stdin.write(request_str)
         process.stdin.flush()
 
-        # Read response line
-        response_line = process.stdout.readline()
+        # Read response line in a thread to avoid blocking the event loop
+        loop = asyncio.get_event_loop()
+        response_line = await loop.run_in_executor(None, process.stdout.readline)
         if not response_line:
-            # Check stderr for errors
-            stderr = process.stderr.read() if process.stderr else ""
+            # Check stderr for errors (non-blocking read)
+            def _read_stderr():
+                return process.stderr.read() if process.stderr else ""
+            stderr = await loop.run_in_executor(None, _read_stderr)
             if stderr:
                 logger.error("mcp_stdio_stderr", server=conn.config.name, stderr=stderr[:2000])
             raise RuntimeError(f"MCP server '{conn.config.name}' closed connection")
@@ -431,10 +474,19 @@ class MCPClientManager:
         all_tools = []
         for server_name, conn in self._connections.items():
             for tool in conn.tools:
+                # Use "__" instead of "/" as separator — DeepSeek and other
+                # LLM APIs require tool names matching ^[a-zA-Z0-9_-]+$
+                raw_schema = tool.get("input_schema", {})
+                # Normalize input_schema — DeepSeek requires type: "object"
+                if not isinstance(raw_schema, dict) or raw_schema.get("type") != "object":
+                    raw_schema = {
+                        "type": "object",
+                        "properties": raw_schema.get("properties", {}) if isinstance(raw_schema, dict) else {},
+                    }
                 all_tools.append({
-                    "name": f"{server_name}/{tool.get('name', 'unknown')}",
+                    "name": f"{server_name}__{tool.get('name', 'unknown')}",
                     "description": f"[{server_name}] {tool.get('description', '')}",
-                    "input_schema": tool.get("input_schema", {}),
+                    "input_schema": raw_schema,
                     "_server": server_name,
                     "_original_name": tool.get("name", ""),
                 })
