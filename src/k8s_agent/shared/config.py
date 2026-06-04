@@ -104,6 +104,20 @@ class LoggingConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="LOG_", extra="ignore")
 
 
+class MonitoringConfig(BaseSettings):
+    """Monitoring and telemetry configuration."""
+
+    enabled: bool = True
+    agent_sight_url: str = "http://127.0.0.1:7395"
+    event_backends: list[str] = ["log", "file", "websocket"]
+    sample_rate: float = 1.0
+    trace_file_path: str = "~/.k8s-agent/traces/"
+    file_buffer_size: int = 50
+    max_recent_events: int = 500
+
+    model_config = SettingsConfigDict(env_prefix="MONITOR_", extra="ignore")
+
+
 class Settings(BaseSettings):
     """Root settings aggregating all configuration sections."""
 
@@ -113,6 +127,7 @@ class Settings(BaseSettings):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     skills: SkillConfig = Field(default_factory=SkillConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
 
     model_config = SettingsConfigDict(
         env_prefix="K8S_AGENT_",
