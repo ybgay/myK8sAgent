@@ -43,6 +43,18 @@ class ChatResponse(BaseModel):
 _agent_instance = None
 _agent_lock = asyncio.Lock()
 
+# Session manager — persists conversation history per session_id
+_session_manager = None
+
+
+def _get_session_manager():
+    """Get or create the global SessionManager instance."""
+    global _session_manager
+    if _session_manager is None:
+        from k8s_agent.core.session import SessionManager
+        _session_manager = SessionManager()
+    return _session_manager
+
 
 async def get_agent():
     """Get or create the global agent instance."""
@@ -92,6 +104,23 @@ async def get_agent():
         return _agent_instance
 
 
+async def _get_or_create_session(session_id: str) -> "Session":
+    """Get an existing session or create a new one.
+
+    Returns the session with its conversation history intact.
+    New sessions start with a fresh (empty) conversation.
+    """
+    sm = _get_session_manager()
+    session = sm.get_session(session_id)
+    if session is None:
+        # Try loading from disk first
+        session = sm.load_session(session_id)
+    if session is None:
+        # Brand-new session
+        session = sm.create_session(session_id)
+    return session
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
@@ -118,15 +147,28 @@ def create_app() -> FastAPI:
 
     @app.post("/api/chat", response_model=ChatResponse)
     async def chat(request: ChatRequest):
-        """Non-streaming chat endpoint."""
+        """Non-streaming chat endpoint with session persistence.
+
+        Each session_id maintains its own conversation history across requests.
+        """
         agent = await get_agent()
-        agent.context.set("current_namespace", request.namespace, scope="session")
-        response = await agent.run(request.message)
+        session = await _get_or_create_session(request.session_id)
+
+        # Load this session's conversation into the agent
+        async with _agent_lock:
+            agent.conversation = session.conversation
+            agent.context.set("current_namespace", request.namespace, scope="session")
+            response = await agent.run(request.message)
+
+        # Persist updated conversation back to session storage
+        sm = _get_session_manager()
+        sm.save_session(request.session_id)
+
         return ChatResponse(text=response, session_id=request.session_id)
 
     @app.websocket("/ws/chat")
     async def ws_chat(websocket: WebSocket):
-        """WebSocket streaming chat endpoint.
+        """WebSocket streaming chat endpoint with session persistence.
 
         Sends events:
         - {"type": "text_delta", "text": "..."}
@@ -135,54 +177,78 @@ def create_app() -> FastAPI:
         - {"type": "tool_result", "result": "..."}
         - {"type": "message_stop"}
         - {"type": "error", "message": "..."}
+
+        Each connection uses a session_id to maintain conversation history
+        across multiple messages within the same session.
         """
         await websocket.accept()
         logger.info("ws_connected")
 
+        # Track session per connection (can be overridden per message)
+        current_session_id = "default"
+
         try:
             agent = await get_agent()
+            sm = _get_session_manager()
 
             while True:
                 # Receive message from client
                 data = await websocket.receive_json()
                 message = data.get("message", "")
                 namespace = data.get("namespace", "default")
+                session_id = data.get("session_id", current_session_id)
 
                 if not message:
                     continue
 
-                agent.context.set("current_namespace", namespace, scope="session")
+                current_session_id = session_id
 
-                try:
-                    async for event in agent.run_stream(message):
-                        if isinstance(event, dict):
-                            await websocket.send_json(event)
-                        elif hasattr(event, 'type'):
-                            payload = {
-                                "type": event.type,
-                                "text": getattr(event, 'text', None),
-                                "tool_name": getattr(event, 'tool_name', None),
-                                "tool_input": getattr(event, 'tool_input', None),
-                                "tool_use_id": getattr(event, 'tool_use_id', None),
-                            }
-                            # Pass through error message if present
-                            error_val = getattr(event, 'error', None)
-                            if error_val is not None:
-                                payload["message"] = str(error_val)
-                            # Pass through visualization data if present
-                            viz_data = getattr(event, 'data', None)
-                            if viz_data is not None:
-                                payload["data"] = viz_data
-                            await websocket.send_json(payload)
-                except Exception as e:
-                    logger.error("stream_error", error=str(e))
-                    await websocket.send_json({"type": "error", "message": str(e)})
+                # Get or create session with its conversation history
+                session = await _get_or_create_session(session_id)
+
+                async with _agent_lock:
+                    # Load this session's conversation into the agent
+                    agent.conversation = session.conversation
+                    agent.context.set("current_namespace", namespace, scope="session")
+
+                    try:
+                        async for event in agent.run_stream(message):
+                            # Update session.conversation ref — agent.conversation IS
+                            # session.conversation (same object), so no copy needed.
+                            if isinstance(event, dict):
+                                await websocket.send_json(event)
+                            elif hasattr(event, 'type'):
+                                payload = {
+                                    "type": event.type,
+                                    "text": getattr(event, 'text', None),
+                                    "tool_name": getattr(event, 'tool_name', None),
+                                    "tool_input": getattr(event, 'tool_input', None),
+                                    "tool_use_id": getattr(event, 'tool_use_id', None),
+                                }
+                                # Pass through error message if present
+                                error_val = getattr(event, 'error', None)
+                                if error_val is not None:
+                                    payload["message"] = str(error_val)
+                                # Pass through visualization data if present
+                                viz_data = getattr(event, 'data', None)
+                                if viz_data is not None:
+                                    payload["data"] = viz_data
+                                await websocket.send_json(payload)
+                    except Exception as e:
+                        logger.error("stream_error", error=str(e))
+                        await websocket.send_json({"type": "error", "message": str(e)})
+
+                # Persist conversation after each message
+                sm.save_session(session_id)
 
         except WebSocketDisconnect:
             logger.info("ws_disconnected")
         except Exception as e:
             logger.error("ws_error", error=str(e))
-            await websocket.send_json({"type": "error", "message": str(e)})
+            try:
+                await websocket.send_json({"type": "error", "message": str(e)})
+            except Exception:
+                pass
 
     @app.get("/api/skills")
     async def list_skills():

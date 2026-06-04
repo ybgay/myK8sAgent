@@ -395,8 +395,9 @@ class MasterAgent:
         """
         start_time = time.monotonic()
 
-        # Reset conversation for new request
-        self.conversation.clear()
+        # Set system prompt (refreshed each turn for updated context)
+        # NOTE: Do NOT clear conversation — history is managed by the API layer
+        # via SessionManager so multi-turn conversations work correctly.
         self.conversation.system_prompt = self._build_system_prompt()
 
         logger.info("master_agent_run", request=user_request[:100])
@@ -423,7 +424,8 @@ class MasterAgent:
         """
         start_time = time.monotonic()
 
-        self.conversation.clear()
+        # NOTE: Do NOT clear conversation — history is managed by the API layer
+        # via SessionManager so multi-turn conversations work correctly.
         self.conversation.system_prompt = self._build_system_prompt()
         self.conversation.add_user_message(user_request)
 
@@ -743,6 +745,15 @@ class MasterAgent:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    def reset_conversation(self) -> None:
+        """Explicitly reset the conversation history.
+
+        Called when starting a brand-new session. In normal multi-turn
+        conversations the history is preserved across calls to run()/run_stream().
+        """
+        self.conversation.clear()
+        logger.info("master_agent_conversation_reset")
 
     async def shutdown(self) -> None:
         """Shut down the master agent."""
